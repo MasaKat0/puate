@@ -1,11 +1,10 @@
-
 [build-system]
 requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "puate"
-version = "0.1.0"
+version = "0.2.0"
 description = "PUATE: efficient ATE estimation from treated (positive) and unlabeled units"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -16,14 +15,16 @@ dependencies = [
   "scikit-learn>=1.3",
   "matplotlib>=3.7",
   "torch>=2.0",
+  "jupyter>=1.0",
+  "nbformat>=5.10"
 ]
 
 [project.optional-dependencies]
 ihdp = [
-  "econml>=0.15",
+  "econml>=0.15"
 ]
 dev = [
-  "pytest>=8.0",
+  "pytest>=8.0"
 ]
 
 [tool.setuptools]

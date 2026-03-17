@@ -3,7 +3,6 @@ from __future__ import annotations
 
 from collections import OrderedDict
 from dataclasses import dataclass
-from typing import Mapping
 
 import numpy as np
 from sklearn.base import clone
@@ -11,10 +10,10 @@ from sklearn.base import clone
 
 @dataclass
 class ATEEstimate:
-    """Container for repeated experiment outputs."""
+    """Container for point estimates and asymptotic variance estimates."""
 
-    estimates: "OrderedDict[str, float]"
-    asymptotic_variances: "OrderedDict[str, float]"
+    estimates: OrderedDict[str, float]
+    asymptotic_variances: OrderedDict[str, float]
 
     def to_dict(self) -> dict[str, dict[str, float]]:
         return {
@@ -39,12 +38,7 @@ def censoring_propensity_from_observation_prob(
     lower: float = 0.10,
     upper: float = 0.90,
 ) -> np.ndarray:
-    """Convert ``P(O=1|X)`` to ``g(1|X)=P(D=1|X,O=0)``.
-
-    In the original notebooks the scalar ``prior`` in the censoring setting is
-    actually the observation rate :math:`c = P(O=1 \\mid D=1)`, not the class
-    prior. This helper keeps the original formula but names it explicitly.
-    """
+    r"""Convert ``P(O=1|X)`` to ``g(1|X)=P(D=1|X,O=0)``."""
 
     observation_prob = _clip_probs(observation_prob, lower, upper)
     g = observation_prob * (1.0 - observation_rate) / ((1.0 - observation_prob) * observation_rate)
@@ -70,23 +64,7 @@ def estimate_censoring_ate(
     random_state: int | None = None,
     true_g: np.ndarray | None = None,
 ) -> ATEEstimate:
-    """Estimate ATE in the censoring setting.
-
-    Parameters
-    ----------
-    X, O, Y:
-        Covariates, observation indicator, and outcome.
-    observation_model:
-        Classifier estimating ``P(O=1|X)``.
-    mu_t_model, mu_u_model:
-        Regression models for ``E[Y|X,O=1]`` and ``E[Y|X,O=0]``.
-    observation_rate:
-        Probability that a treated unit is observed in the positive set
-        (``prior`` in the original notebooks).
-    true_g:
-        Optional ground-truth censoring propensity ``g(1|X)`` used in the
-        synthetic experiments.
-    """
+    """Estimate ATE in the censoring setting by cross-fitting score functions."""
 
     X = np.asarray(X)
     O = np.asarray(O).astype(int)
@@ -132,13 +110,13 @@ def estimate_censoring_ate(
 
         ipw = (
             O_test * Y_test / pi_hat
-            - (1 - O_test) * Y_test / ((1.0 - g_hat) * (1.0 - pi_hat))
+            - (1.0 - O_test) * Y_test / ((1.0 - g_hat) * (1.0 - pi_hat))
             + g_hat * O_test * Y_test / ((1.0 - g_hat) * pi_hat)
         )
         dm = mu_t_hat - mu_u_hat / (1.0 - g_hat) + g_hat * mu_t_hat / (1.0 - g_hat)
         efficient = (
             O_test * (Y_test - mu_t_hat) / pi_hat
-            - (1 - O_test) * (Y_test - mu_u_hat) / ((1.0 - g_hat) * (1.0 - pi_hat))
+            - (1.0 - O_test) * (Y_test - mu_u_hat) / ((1.0 - g_hat) * (1.0 - pi_hat))
             + g_hat * O_test * (Y_test - mu_t_hat) / ((1.0 - g_hat) * pi_hat)
             + dm
         )
@@ -151,13 +129,13 @@ def estimate_censoring_ate(
             g_star = _clip_probs(true_g[test_idx], 0.10, 0.90)
             ipw_true = (
                 O_test * Y_test / pi_hat
-                - (1 - O_test) * Y_test / ((1.0 - g_star) * (1.0 - pi_hat))
+                - (1.0 - O_test) * Y_test / ((1.0 - g_star) * (1.0 - pi_hat))
                 + g_star * O_test * Y_test / ((1.0 - g_star) * pi_hat)
             )
             dm_true = mu_t_hat - mu_u_hat / (1.0 - g_star) + g_star * mu_t_hat / (1.0 - g_star)
             efficient_true = (
                 O_test * (Y_test - mu_t_hat) / pi_hat
-                - (1 - O_test) * (Y_test - mu_u_hat) / ((1.0 - g_star) * (1.0 - pi_hat))
+                - (1.0 - O_test) * (Y_test - mu_u_hat) / ((1.0 - g_star) * (1.0 - pi_hat))
                 + g_star * O_test * (Y_test - mu_t_hat) / ((1.0 - g_star) * pi_hat)
                 + dm_true
             )
@@ -167,6 +145,7 @@ def estimate_censoring_ate(
 
     estimates: OrderedDict[str, float] = OrderedDict()
     variances: OrderedDict[str, float] = OrderedDict()
+
     for name, chunks in estimated_scores.items():
         score = np.concatenate(chunks)
         estimates[name], variances[name] = _mean_and_var(score)
@@ -185,8 +164,7 @@ def _case_control_group_stats(
 ) -> tuple[float, float]:
     n_t = len(treatment_scores)
     n_u = len(unlabeled_scores)
-    n = n_t + n_u
-    alpha = n_t / n
+    alpha = n_t / (n_t + n_u)
     estimate = float(np.mean(treatment_scores) + np.mean(unlabeled_scores))
     asymptotic_variance = float(
         np.var(treatment_scores, ddof=0) / alpha
@@ -208,21 +186,7 @@ def estimate_case_control_ate(
     random_state: int | None = None,
     true_e: np.ndarray | None = None,
 ) -> ATEEstimate:
-    """Estimate ATE in the case-control setting.
-
-    Notes
-    -----
-    The original notebooks contained two clear issues in the case-control
-    variance code:
-
-    1. the DM variance used the DR treatment residual array by mistake, and
-    2. the groupwise variance calculation mixed raw second moments and
-       incompatible score indices.
-
-    This function keeps the point estimators intact but computes the asymptotic
-    variances from the positive and unlabeled groups separately, which matches
-    the two-sample estimator structure.
-    """
+    """Estimate ATE in the case-control setting by cross-fitting score functions."""
 
     X = np.asarray(X)
     O = np.asarray(O).astype(int)
@@ -286,8 +250,7 @@ def estimate_case_control_ate(
         )
 
         efficient_t = (
-            class_prior
-            * (Y_test[t_mask] - mu_t_hat[t_mask])
+            class_prior * (Y_test[t_mask] - mu_t_hat[t_mask])
             / (e_hat[t_mask] * (1.0 - e_hat[t_mask]))
         )
         efficient_u = (
@@ -314,12 +277,12 @@ def estimate_case_control_ate(
                 + e_star[u_mask] * mu_t_hat[u_mask] / (1.0 - e_star[u_mask])
             )
 
-            efficient_t_true = class_prior * (
-                Y_test[t_mask] - mu_t_hat[t_mask]
-            ) / (e_star[t_mask] * (1.0 - e_star[t_mask]))
+            efficient_t_true = (
+                class_prior * (Y_test[t_mask] - mu_t_hat[t_mask])
+                / (e_star[t_mask] * (1.0 - e_star[t_mask]))
+            )
             efficient_u_true = (
-                -(Y_test[u_mask] - mu_u_hat[u_mask]) / (1.0 - e_star[u_mask])
-                + dm_u_true
+                -(Y_test[u_mask] - mu_u_hat[u_mask]) / (1.0 - e_star[u_mask]) + dm_u_true
             )
 
             oracle["ipw_t_true_e"].append(ipw_t_true)
@@ -338,13 +301,10 @@ def estimate_case_control_ate(
     variances: OrderedDict[str, float] = OrderedDict()
 
     estimates["ipw"], variances["ipw"] = _case_control_group_stats(ipw_t_all, ipw_u_all)
-    total_n = len(ipw_t_all) + len(ipw_u_all)
-    alpha = len(ipw_t_all) / total_n
+    alpha = len(ipw_t_all) / (len(ipw_t_all) + len(ipw_u_all))
     estimates["dm"] = float(np.mean(dm_u_all))
     variances["dm"] = float(np.var(dm_u_all, ddof=0) / (1.0 - alpha))
-    estimates["efficient"], variances["efficient"] = _case_control_group_stats(
-        eff_t_all, eff_u_all
-    )
+    estimates["efficient"], variances["efficient"] = _case_control_group_stats(eff_t_all, eff_u_all)
 
     if oracle is not None:
         ipw_t_all = np.concatenate(oracle["ipw_t_true_e"])

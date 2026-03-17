@@ -31,14 +31,14 @@ def generate_censoring_synthetic_linear(
 ) -> ExperimentData:
     rng = _rng(rng)
     X = rng.normal(0.0, 1.0, size=(n, p))
-    propensity_coef = rng.normal(0.0, 0.5, size=p)
-    eta = expit(X @ propensity_coef)
+    beta_g = rng.normal(0.0, 0.5, size=p)
+    eta = expit(X @ beta_g)
     eta = np.clip(eta, 0.10, 0.90)
     D = rng.binomial(1, eta)
     observation_rate = float(rng.uniform(0.1, 0.9))
     O = rng.binomial(1, observation_rate, size=n) * D
-    beta = rng.normal(0.0, 1.0, size=p)
-    Y = X @ beta + 1.1 + true_ate * D + rng.normal(0.0, 1.0, size=n)
+    beta_y = rng.normal(0.0, 1.0, size=p)
+    Y = X @ beta_y + 1.1 + true_ate * D + rng.normal(0.0, 1.0, size=n)
     g = ((1.0 - observation_rate) * eta) / (1.0 - observation_rate * eta)
     g = np.clip(g, 0.10, 0.90)
     return ExperimentData(
@@ -67,14 +67,14 @@ def generate_censoring_synthetic_nonlinear(
     rng = _rng(rng)
     X = rng.normal(0.0, 1.0, size=(n, p))
     X_aug = np.concatenate([X, X**2], axis=1)
-    propensity_coef = rng.normal(0.0, 0.5, size=X_aug.shape[1])
-    eta = expit(X_aug @ propensity_coef)
+    beta_g = rng.normal(0.0, 0.5, size=X_aug.shape[1])
+    eta = expit(X_aug @ beta_g)
     eta = np.clip(eta, 0.10, 0.90)
     D = rng.binomial(1, eta)
     observation_rate = float(rng.uniform(0.1, 0.9))
     O = rng.binomial(1, observation_rate, size=n) * D
-    beta = rng.normal(0.0, 1.0, size=p)
-    Y = (X @ beta) ** 2 + 1.1 + true_ate * D + rng.normal(0.0, 1.0, size=n)
+    beta_y = rng.normal(0.0, 1.0, size=p)
+    Y = (X @ beta_y) ** 2 + 1.1 + true_ate * D + rng.normal(0.0, 1.0, size=n)
     g = ((1.0 - observation_rate) * eta) / (1.0 - observation_rate * eta)
     g = np.clip(g, 0.10, 0.90)
     return ExperimentData(
@@ -194,8 +194,8 @@ def _load_ihdp_surface(surface: str):
         from econml.data import dgps
     except ImportError as exc:
         raise ImportError(
-            "IHDP experiments require econml. Install the optional dependency "
-            "with `pip install -e \".[ihdp]\"` or `pip install econml`."
+            "IHDP experiments require econml. Install it with `pip install -e \".[ihdp]\"` "
+            "or `pip install econml`."
         ) from exc
 
     surface = surface.upper()
@@ -212,15 +212,18 @@ def make_censoring_ihdp_observations(
     observation_rate: float = 0.1,
     rng: np.random.Generator | None = None,
 ) -> ExperimentData:
-    """Mirror the IHDP censoring notebooks with the IHDP-B surface bug fixed."""
+    """Construct the censoring IHDP setting for response surface A or B."""
 
     rng = _rng(rng)
     Y, D, X, true_ite = _load_ihdp_surface(surface)
+    X = np.asarray(X)
+    D = np.asarray(D, dtype=int)
+    Y = np.asarray(Y, dtype=float)
     O = rng.binomial(1, observation_rate, size=len(D)) * D
     return ExperimentData(
-        X=np.asarray(X),
-        O=np.asarray(O, dtype=int),
-        Y=np.asarray(Y, dtype=float),
+        X=X,
+        O=O.astype(int),
+        Y=Y,
         true_ate=float(np.mean(true_ite)),
         true_propensity=None,
         metadata={
@@ -233,17 +236,20 @@ def make_censoring_ihdp_observations(
     )
 
 
+
 def make_case_control_ihdp_observations(
     *,
     surface: str = "A",
     class_prior: float = 0.1,
     rng: np.random.Generator | None = None,
 ) -> ExperimentData:
-    """Mirror the provided IHDP case-control notebooks.
+    """Construct the IHDP case-control sample for response surface A or B.
 
-    Surface A and surface B used different sampling code in the original
-    notebooks. This helper preserves that behavior to avoid silently changing
-    the experimental design in the public refactor.
+    For response surface A, treated units are split so the unlabeled sample has
+    class prior approximately 0.1 while controls remain unlabeled. For response
+    surface B, the full sample is randomly split into candidate unlabeled and
+    candidate positive subsets, and treated units in the positive subset are
+    retained as labeled positives.
     """
 
     rng = _rng(rng)
@@ -259,29 +265,29 @@ def make_case_control_ihdp_observations(
         unlabeled_positive_size = int(class_prior * true_negative_size / (1.0 - class_prior))
         labeled_positive_size = true_positive_size - unlabeled_positive_size
 
-        positive_index = np.where(D == 1)[0]
-        positive_index = rng.permutation(positive_index)
-        labeled_positive_index = positive_index[:labeled_positive_size]
+        positive_idx = np.where(D == 1)[0]
+        positive_idx = rng.permutation(positive_idx)
+        labeled_positive_idx = positive_idx[:labeled_positive_size]
 
         O = np.zeros(len(D), dtype=int)
-        O[labeled_positive_index] = 1
+        O[labeled_positive_idx] = 1
         X_out = X
         Y_out = Y
         O_out = O
     else:
         unlabeled_size = int(len(D) / 2)
-        sample_index = rng.permutation(np.arange(len(X)))
-        unlabeled_sample_index = sample_index[:unlabeled_size]
-        positive_sample_index = sample_index[unlabeled_size:]
-        positive_label_index = positive_sample_index[D[positive_sample_index] == 1]
+        sample_idx = rng.permutation(np.arange(len(D)))
+        unlabeled_idx = sample_idx[:unlabeled_size]
+        positive_candidate_idx = sample_idx[unlabeled_size:]
+        positive_label_idx = positive_candidate_idx[D[positive_candidate_idx] == 1]
 
-        total_index = np.concatenate([positive_label_index, unlabeled_sample_index])
+        total_idx = np.concatenate([positive_label_idx, unlabeled_idx])
         O = np.zeros(len(D), dtype=int)
-        O[positive_label_index] = 1
+        O[positive_label_idx] = 1
 
-        X_out = X[total_index]
-        Y_out = Y[total_index]
-        O_out = O[total_index]
+        X_out = X[total_idx]
+        Y_out = Y[total_idx]
+        O_out = O[total_idx]
 
     return ExperimentData(
         X=np.asarray(X_out),

@@ -1,9 +1,6 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Iterable
-
 import numpy as np
 import torch
 import torch.nn as nn
@@ -15,12 +12,7 @@ from sklearn.utils.validation import check_X_y, check_array, check_is_fitted
 
 
 class BoundedProbClassifier(BaseEstimator, ClassifierMixin):
-    """Wrap a classifier and clip ``predict_proba`` outputs away from 0 and 1.
-
-    The original notebooks repeatedly clipped probabilities to avoid numerical
-    instability in inverse-propensity weights. This wrapper centralizes that
-    behavior without changing the underlying estimator.
-    """
+    """Wrap a classifier and clip positive-class probabilities away from 0 and 1."""
 
     def __init__(self, base_classifier: BaseEstimator, lower: float = 0.05, upper: float = 0.95):
         self.base_classifier = base_classifier
@@ -40,17 +32,11 @@ class BoundedProbClassifier(BaseEstimator, ClassifierMixin):
         return np.column_stack([1.0 - pos, pos])
 
     def score(self, X: np.ndarray, y: np.ndarray) -> float:
-        return self.base_classifier.score(X, y)
+        return float(self.base_classifier.score(X, y))
 
 
 class ElkanNotoClassifier(BaseEstimator, ClassifierMixin):
-    """Elkan-Noto style rescaling for the positive class probability.
-
-    The original notebooks divided the *entire* 2-column probability matrix by
-    the scaling factor and only used the positive-class column. This public
-    version keeps the intended behavior for the positive class while returning a
-    valid 2-column probability matrix whose rows sum to one.
-    """
+    """Elkan-Noto style rescaling for the positive class probability."""
 
     def __init__(
         self,
@@ -77,15 +63,11 @@ class ElkanNotoClassifier(BaseEstimator, ClassifierMixin):
         return np.column_stack([1.0 - pos, pos])
 
     def score(self, X: np.ndarray, y: np.ndarray) -> float:
-        return self.base_classifier.score(X, y)
+        return float(self.base_classifier.score(X, y))
 
 
 class NonNegativePULearner(BaseEstimator, ClassifierMixin):
-    """Non-negative PU learner used in the case-control MLP notebooks.
-
-    This class mirrors the provided PyTorch implementation as closely as
-    possible so that the cleaned scripts behave like the original notebooks.
-    """
+    """Non-negative PU learner with a feedforward neural network."""
 
     def __init__(
         self,
@@ -93,11 +75,13 @@ class NonNegativePULearner(BaseEstimator, ClassifierMixin):
         prior: float | None = None,
         lr: float = 0.01,
         epochs: int = 100,
+        random_state: int | None = 1,
     ):
         self.hidden_layer_sizes = hidden_layer_sizes
         self.prior = prior
         self.lr = lr
         self.epochs = epochs
+        self.random_state = random_state
         self.is_fitted_ = False
 
     def _build_model(self, input_dim: int) -> nn.Module:
@@ -113,6 +97,9 @@ class NonNegativePULearner(BaseEstimator, ClassifierMixin):
 
     def fit(self, X: np.ndarray, y: np.ndarray):
         X, y = check_X_y(X, y)
+
+        if self.random_state is not None:
+            torch.manual_seed(int(self.random_state))
 
         x_tensor = torch.FloatTensor(X)
         pos_mask = y == 1
@@ -158,8 +145,7 @@ class NonNegativePULearner(BaseEstimator, ClassifierMixin):
         return np.column_stack([1.0 - pos, pos])
 
     def predict(self, X: np.ndarray) -> np.ndarray:
-        proba = self.predict_proba(X)[:, 1]
-        return (proba > 0.5).astype(int)
+        return (self.predict_proba(X)[:, 1] > 0.5).astype(int)
 
     def score(self, X: np.ndarray, y: np.ndarray) -> float:
         from sklearn.metrics import accuracy_score
@@ -168,7 +154,7 @@ class NonNegativePULearner(BaseEstimator, ClassifierMixin):
 
 
 class LinearPULearner(BaseEstimator, ClassifierMixin):
-    """Linear PU learner from the provided case-control linear notebook."""
+    """Linear PU learner."""
 
     def __init__(self, prior: float | None = None):
         self.prior = prior
@@ -189,8 +175,7 @@ class LinearPULearner(BaseEstimator, ClassifierMixin):
         if self.prior is None:
             self.prior = float(np.mean(y == 1))
 
-        n_features = X.shape[1]
-        w0 = np.ones(n_features)
+        w0 = np.ones(X.shape[1])
         res = minimize(self._pu_loss, w0, args=(X, y, self.prior), method="BFGS")
         self.coef_ = res.x
         self.is_fitted_ = True
@@ -199,13 +184,11 @@ class LinearPULearner(BaseEstimator, ClassifierMixin):
     def predict_proba(self, X: np.ndarray) -> np.ndarray:
         check_is_fitted(self, attributes=["is_fitted_", "coef_"])
         X = check_array(X)
-        logits = X @ self.coef_
-        pos = expit(logits)
+        pos = expit(X @ self.coef_)
         return np.column_stack([1.0 - pos, pos])
 
     def predict(self, X: np.ndarray) -> np.ndarray:
-        proba = self.predict_proba(X)[:, 1]
-        return (proba > 0.5).astype(int)
+        return (self.predict_proba(X)[:, 1] > 0.5).astype(int)
 
     def score(self, X: np.ndarray, y: np.ndarray) -> float:
         from sklearn.metrics import accuracy_score
